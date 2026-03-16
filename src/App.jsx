@@ -8,7 +8,7 @@ const loadQuizData = async () => {
 
   for (const subject of subjects) {
     try {
-      const res = await fetch(`/${subject}.json`);
+      const res = await fetch(`./${subject}.json`);
       if (res.ok) {
         data[subject] = await res.json();
       }

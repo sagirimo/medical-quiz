@@ -7,17 +7,18 @@ function createWindow() {
     height: 800,
     webPreferences: {
       nodeIntegration: false,
-      contextIsolation: true
+      contextIsolation: true,
+      webSecurity: false  // 允许加载本地文件
     },
     title: '北医题库刷题系统'
   })
 
-  // 加载打包后的文件或开发服务器
-  if (process.env.VITE_DEV_SERVER_URL) {
-    win.loadURL(process.env.VITE_DEV_SERVER_URL)
-  } else {
-    win.loadFile(path.join(__dirname, '../dist/index.html'))
-  }
+  // 打包后从asar内加载dist/index.html
+  const indexPath = path.join(__dirname, '../dist/index.html')
+  win.loadFile(indexPath)
+
+  // 开发时打开DevTools
+  // win.webContents.openDevTools()
 }
 
 app.whenReady().then(createWindow)
