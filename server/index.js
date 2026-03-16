@@ -14,7 +14,7 @@ app.use(cors())
 app.use(express.json({ limit: '10mb' }))
 
 // 题库文件路径
-const DATA_DIR = join(__dirname, '../data')
+const DATA_DIR = join(__dirname, 'public')
 
 // 获取题库
 app.get('/api/questions/:subject', (req, res) => {

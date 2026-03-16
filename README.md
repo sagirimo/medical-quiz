@@ -1,77 +1,69 @@
 # 北医题库刷题系统
 
-一个现代化的在线刷题网站，支持内科、外科、妇产、儿科四科题库，共收录 2274 道真题。
+一个现代化的医学刷题应用，覆盖内科、外科、妇产、儿科四大科目，共收录 **2926 道** 真题。
 
 ## 功能特性
 
-- 🎯 **套卷模式**：按科目选择套卷刷题
-- 📖 **章节筛选**：支持按章节针对性练习
-- ✅ **即时反馈**：选择后立即显示正确答案
-- 🔥 **连击系统**：连续答对显示连击提示
-- 📚 **错题收录**：自动记录错题，支持复习
-- 🎉 **成绩结算**：正确率 ≥80% 触发撒花特效
-- 📱 **响应式设计**：支持手机、平板、电脑
+- 🎯 **套卷刷题**：按科目选择整套试卷练习
+- 📖 **章节筛选**：支持按章节针对性训练
+- ✅ **即时反馈**：答题后立即显示正误与答案
+- 🔥 **连击系统**：连续答对触发连击特效
+- 📊 **成绩统计**：答完自动统计正确率，≥80% 撒花庆祝
+- 📱 **跨平台**：支持浏览器访问，可打包为桌面应用
 
-## 技术栈
+## 题库统计
 
-- **前端**：React 18 + TailwindCSS + Lucide Icons
-- **后端**：Express.js（可选，用于题库编辑）
-- **构建工具**：Vite
+| 科目 | 章节 | 题目数 |
+|------|------|--------|
+| 儿科学 | 14 | 768 |
+| 内科学 | 10 | 706 |
+| 外科学 | 6 | 702 |
+| 妇产科学 | 30 | 750 |
+| **合计** | **60** | **2926** |
 
 ---
 
 ## 快速开始
 
-### 1. 环境要求
+### 方式一：直接使用（推荐）
 
-确保已安装 Node.js（推荐 v18+）：
+从 [Releases](../../releases) 下载最新版本：
+- **Windows**: 下载 `.exe` 安装包
+- **macOS**: 下载 `.dmg` 安装包
 
-```bash
-node -v
-```
-
-如未安装，访问 https://nodejs.org/ 下载 LTS 版本。
-
-### 2. 下载项目
+### 方式二：本地运行
 
 ```bash
+# 1. 克隆项目
 git clone https://github.com/sagirimo/medical-quiz.git
-cd medical-quiz/frontend
-```
+cd medical-quiz
 
-### 3. 安装依赖
-
-```bash
+# 2. 安装依赖
 npm install
-```
 
-如遇网络问题，可使用国内镜像：
-
-```bash
-npm install --registry=https://registry.npmmirror.com
-```
-
-### 4. 启动项目
-
-```bash
+# 3. 启动开发服务器
 npm run dev
+
+# 4. 打开浏览器访问 http://localhost:5173
 ```
 
-### 5. 访问网站
+### 方式三：构建静态网站
 
-打开浏览器访问 http://localhost:5173
+```bash
+npm run build
+# 生成的 dist/ 目录可部署到任意 Web 服务器
+```
 
 ---
 
-## 题库概览
+## 命令说明
 
-| 科目 | 章节数 | 题目数 |
-|------|--------|--------|
-| 儿科学 | 14 | 686 |
-| 内科学 | 9 | 485 |
-| 外科学 | 6 | 506 |
-| 妇产科学 | 26 | 597 |
-| **合计** | **55** | **2274** |
+| 命令 | 说明 |
+|------|------|
+| `npm run dev` | 启动开发服务器 |
+| `npm run build` | 构建静态文件 |
+| `npm run build:win` | 打包 Windows 应用 |
+| `npm run build:mac` | 打包 macOS 应用 |
 
 ---
 
@@ -79,83 +71,42 @@ npm run dev
 
 ```
 medical-quiz/
-├── data/                    # 题库数据 (JSON)
+├── public/              # 题库数据
 │   ├── 儿科学.json
 │   ├── 内科学.json
 │   ├── 外科学.json
 │   └── 妇产科学.json
-├── frontend/
-│   ├── public/              # 静态资源（题库副本）
-│   ├── src/
-│   │   ├── App.jsx          # 主应用组件
-│   │   ├── main.jsx         # 入口文件
-│   │   └── index.css        # 样式文件
-│   ├── package.json
-│   └── vite.config.js
-├── parse_pdf.py             # PDF 解析脚本
-└── README.md
+├── src/                 # 前端源码
+│   ├── App.jsx
+│   ├── main.jsx
+│   └── index.css
+├── server/              # 后端 API (可选)
+├── 题库md/              # 原始 Markdown 题库
+├── electron/            # Electron 配置
+├── convert_md.py        # MD 转 JSON 脚本
+└── package.json
 ```
 
 ---
 
-## 题库数据格式
+## 更新题库
 
-题库采用 JSON 格式，按章节组织：
+题库源文件在 `题库md/` 目录，修改后运行：
 
-```json
-{
-  "章节名称": [
-    {
-      "id": 1,
-      "chapter": "章节名称",
-      "type": "mcq",
-      "question": "题目内容",
-      "options": ["A. 选项A", "B. 选项B", "C. 选项C", "D. 选项D", "E. 选项E"],
-      "correctAnswer": 0,
-      "explanation": "解析内容"
-    }
-  ]
-}
+```bash
+python3 convert_md.py <科目名> 题库md/<文件>.md public/<科目名>.json
+
+# 示例
+python3 convert_md.py 内科学 题库md/内科.md public/内科学.json
 ```
-
-> `correctAnswer` 为选项索引：0=A, 1=B, 2=C, 3=D, 4=E
 
 ---
 
-## 题库更新
+## 技术栈
 
-如果需要从 PDF 重新解析题库：
-
-```bash
-cd medical-quiz
-python parse_pdf.py
-```
-
-依赖：`pip install pymupdf`
-
----
-
-## 常见问题
-
-### Q: npm install 报错？
-
-尝试使用国内镜像：
-```bash
-npm config set registry https://registry.npmmirror.com
-npm install
-```
-
-### Q: 端口被占用？
-
-前端默认端口 5173，修改方法：
-```bash
-# 使用其他端口启动
-npx vite --port 3000
-```
-
-### Q: 手机如何访问？
-
-启动后终端会显示 Network 地址，如 `http://192.168.1.100:5173`，确保手机和电脑在同一局域网即可访问。
+- **前端**: React 18 + TailwindCSS + Lucide Icons
+- **构建**: Vite
+- **桌面打包**: Electron
 
 ---
 

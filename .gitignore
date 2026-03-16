@@ -1,12 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+release/
+
+# Cache
+.cache/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
 # Python
 venv/
 __pycache__/
 *.pyc
 *.pyo
 .env
-
-# macOS
-.DS_Store
-
-# Node
-node_modules/
