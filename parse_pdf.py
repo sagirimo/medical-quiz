@@ -1,162 +1,331 @@
-#!/usr/bin/env python3
 """
-PDF题目解析脚本
-从北医题库PDF中提取题目，输出为JSON格式
+北医题库 PDF 解析引擎 (PyMuPDF 多栏布局版)
+pip install pymupdf
 """
-
-import pdfplumber
-import json
+import fitz  # PyMuPDF
 import re
+import json
 import os
 
-def extract_text_from_pdf(pdf_path):
-    """提取PDF全部文本"""
-    all_text = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                all_text.append(text)
-    return '\n'.join(all_text)
+def extract_questions_from_pdf(pdf_path):
+    """
+    使用PyMuPDF解析多栏布局的PDF题库
+    """
+    # 正则表达式
+    regex_chapter = re.compile(r'^《(\d+)\.(.*?)》')
+    regex_question = re.compile(r'^(\d+)\s*\.\s*(.+)')
+    regex_option = re.compile(r'^([A-E])\s*[.、．]\s*(.+)')
+    regex_answer = re.compile(r'参考答案\s*[:：]\s*([A-E])')
 
-def parse_questions(text, subject_name):
-    """解析文本中的题目"""
+    ignore_keywords = ["一、A1型题", "一、A2型题", "二、A", "得分:", "目录", "合计"]
+
+    doc = fitz.open(pdf_path)
+    page_width = doc[0].rect.width
+    mid_point = page_width / 2  # 左右栏分界点
+
+    print(f"🚀 解析: {os.path.basename(pdf_path)}")
+    print(f"   页面宽度: {page_width:.0f}, 中分线: {mid_point:.0f}")
+
     questions = []
+    current_chapter = "未知章节"
 
-    # 按章节分割
-    chapter_pattern = r'《(\d+\.[^》]+)》'
-    chapters = re.split(chapter_pattern, text)
+    for page_num, page in enumerate(doc):
+        # 获取所有文本块
+        blocks = page.get_text("blocks")
 
-    # chapters[0] 是目录部分，跳过
-    # 之后是交替的：章节名、章节内容
+        # 分离左右栏
+        left_blocks = []
+        right_blocks = []
 
-    current_chapter = ""
+        for b in blocks:
+            if b[6] != 0:  # 跳过图片块
+                continue
+            x0 = b[0]
+            text = b[4].strip()
+            if not text:
+                continue
 
-    for i in range(1, len(chapters), 2):
-        if i < len(chapters):
-            current_chapter = chapters[i].strip()
-        if i + 1 < len(chapters):
-            chapter_content = chapters[i + 1]
-            chapter_questions = parse_chapter_questions(chapter_content, current_chapter, subject_name)
-            questions.extend(chapter_questions)
+            # 根据x坐标分栏
+            if x0 < mid_point:
+                left_blocks.append((b[1], x0, text))  # (y, x, text)
+            else:
+                right_blocks.append((b[1], x0, text))
 
+        # 左栏从上到下，然后右栏从上到下
+        left_blocks.sort(key=lambda t: t[0])
+        right_blocks.sort(key=lambda t: t[0])
+
+        all_text_blocks = left_blocks + right_blocks
+
+        # 解析每个文本块
+        for y, x, text in all_text_blocks:
+            lines = text.split('\n')
+
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+
+                # 检查章节
+                chap_match = regex_chapter.match(line)
+                if chap_match:
+                    current_chapter = chap_match.group(2).strip()
+                    continue
+
+                # 过滤垃圾
+                if any(kw in line for kw in ignore_keywords):
+                    continue
+
+                # 页码过滤
+                if re.match(r'^\d+\s*/\s*\d+$', line):
+                    continue
+
+                # 检查题目
+                q_match = regex_question.match(line)
+                if q_match:
+                    # 检查这一行是否包含答案（可能跟在后面）
+                    ans_in_line = regex_answer.search(line)
+                    if ans_in_line:
+                        answer = ans_in_line.group(1)
+                    else:
+                        answer = ''
+
+                    # 提取题号和题干
+                    qid = q_match.group(1)
+                    question_text = q_match.group(2)
+
+                    # 从题干中提取答案（如果有的话）
+                    ans_match = regex_answer.search(question_text)
+                    if ans_match:
+                        answer = ans_match.group(1)
+                        question_text = regex_answer.sub('', question_text).strip()
+
+                    # 提取选项
+                    options = []
+                    remaining_text = question_text
+
+                    # 找所有选项
+                    opt_pattern = re.compile(r'([A-E])\s*[.、．]\s*([^A-E]+?)(?=([A-E]\s*[.、．])|$)')
+                    matches = list(opt_pattern.finditer(question_text))
+
+                    if matches:
+                        # 有内联选项
+                        for m in matches:
+                            opt_letter = m.group(1)
+                            opt_text = m.group(2).strip()
+                            if opt_text:
+                                options.append(f"{opt_letter}. {opt_text}")
+
+                        # 题干是第一个选项之前的内容
+                        first_opt_start = matches[0].start()
+                        question_text = question_text[:first_opt_start].strip()
+
+                    # 单独处理答案行
+                    if not answer:
+                        # 检查是否有答案标记
+                        pass
+
+                    # 只有当有足够选项时才保存
+                    if len(options) >= 4 and answer:
+                        questions.append({
+                            'id': len(questions) + 1,
+                            'chapter': current_chapter,
+                            'type': 'mcq',
+                            'question': question_text,
+                            'options': options[:5],  # 最多5个选项
+                            'correctAnswer': answer,
+                            'explanation': ''
+                        })
+
+    doc.close()
+
+    print(f"✅ 提取了 {len(questions)} 道题目")
     return questions
 
-def parse_chapter_questions(text, chapter, subject_name):
-    """解析单个章节的题目"""
+
+def process_pdf_v2(pdf_path):
+    """
+    改进版：逐行处理，更精确地提取题目
+    """
+    regex_chapter = re.compile(r'^《(\d+)\.(.*?)》')
+    regex_question = re.compile(r'^(\d+)\s*\.\s*(.+)')
+    regex_option = re.compile(r'^([A-E])\s*[.、．]\s*(.+)')
+    regex_answer = re.compile(r'参考答案\s*[:：]\s*([A-E])')
+
+    ignore_keywords = ["一、A1型题", "一、A2型题", "二、A", "得分:", "目录", "合计", "北医"]
+
+    doc = fitz.open(pdf_path)
+    page_width = doc[0].rect.width
+    mid_point = page_width / 2
+
+    print(f"🚀 解析: {os.path.basename(pdf_path)}")
+
     questions = []
+    current_chapter = "未知章节"
 
-    # 匹配题目模式
-    # 题目编号. 题干内容 (可能多行)
-    # A. 选项 (可能多行)
-    # B. 选项
-    # C. 选项
-    # D. 选项
-    # E. 选项
-    # 参考答案：X
+    for page_num, page in enumerate(doc):
+        blocks = page.get_text("blocks")
 
-    # 先按"参考答案"分割，找到所有答案位置
-    answer_pattern = r'参考答案[：:]\s*([A-Ea-e])'
+        # 分栏并排序
+        left_blocks = [(b[0], b[1], b[4]) for b in blocks if b[6] == 0 and b[0] < mid_point]
+        right_blocks = [(b[0], b[1], b[4]) for b in blocks if b[6] == 0 and b[0] >= mid_point]
 
-    # 找到所有答案
-    answers = re.findall(answer_pattern, text)
+        left_blocks.sort(key=lambda t: (t[1], t[0]))  # 按y, x排序
+        right_blocks.sort(key=lambda t: (t[1], t[0]))
 
-    # 用更复杂的正则匹配整个题目块
-    question_pattern = r'(\d+)\s*[\.．、]\s*(.+?)((?:[A-Ea-e][\.．、]\s*.+?\n?)+)\s*参考答案[：:]\s*([A-Ea-e])'
+        all_lines = []
 
-    matches = re.findall(question_pattern, text, re.DOTALL)
+        for _, _, text in left_blocks + right_blocks:
+            for line in text.split('\n'):
+                line = line.strip()
+                if line:
+                    all_lines.append(line)
 
-    for match in matches:
-        q_num, question_text, options_text, answer = match
+        # 状态机处理
+        current_q = None
+        current_state = None
 
-        # 清理题干文本
-        question_text = clean_text(question_text)
+        for line in all_lines:
+            # 章节检测
+            chap_match = regex_chapter.match(line)
+            if chap_match:
+                current_chapter = chap_match.group(2).strip()
+                continue
 
-        # 解析选项
-        options = parse_options(options_text)
+            # 垃圾过滤
+            if any(kw in line for kw in ignore_keywords):
+                continue
+            if re.match(r'^\d+\s*/\s*\d+$', line):
+                continue
 
-        if options and question_text:
-            questions.append({
-                "id": f"{subject_name[:2]}_{chapter}_{q_num}",
-                "number": int(q_num),
-                "subject": subject_name,
-                "chapter": chapter,
-                "question": question_text,
-                "options": options,
-                "answer": answer.upper()
-            })
+            # 答案行
+            ans_match = regex_answer.search(line)
+            if ans_match and current_q:
+                current_q['answer'] = ans_match.group(1)
+                # 保存题目
+                if len(current_q['options']) >= 4:
+                    questions.append({
+                        'id': len(questions) + 1,
+                        'chapter': current_q['chapter'],
+                        'type': 'mcq',
+                        'question': current_q['question'],
+                        'options': current_q['options'],
+                        'correctAnswer': current_q['answer'],
+                        'explanation': ''
+                    })
+                current_q = None
+                current_state = None
+                continue
 
+            # 题目行
+            q_match = regex_question.match(line)
+            if q_match:
+                # 保存上一题（如果有）
+                if current_q and len(current_q['options']) >= 4 and current_q['answer']:
+                    questions.append({
+                        'id': len(questions) + 1,
+                        'chapter': current_q['chapter'],
+                        'type': 'mcq',
+                        'question': current_q['question'],
+                        'options': current_q['options'],
+                        'correctAnswer': current_q['answer'],
+                        'explanation': ''
+                    })
+
+                # 开始新题
+                current_q = {
+                    'chapter': current_chapter,
+                    'question': q_match.group(2),
+                    'options': [],
+                    'answer': ''
+                }
+                current_state = 'question'
+                continue
+
+            # 选项行
+            opt_match = regex_option.match(line)
+            if opt_match:
+                if current_q:
+                    opt_text = f"{opt_match.group(1)}. {opt_match.group(2)}"
+                    current_q['options'].append(opt_text)
+                current_state = 'option'
+                continue
+
+            # 续行
+            if current_q:
+                if current_state == 'question':
+                    current_q['question'] += ' ' + line
+                elif current_state == 'option' and current_q['options']:
+                    current_q['options'][-1] += line
+
+    # 保存最后一题
+    if current_q and len(current_q['options']) >= 4 and current_q['answer']:
+        questions.append({
+            'id': len(questions) + 1,
+            'chapter': current_q['chapter'],
+            'type': 'mcq',
+            'question': current_q['question'],
+            'options': current_q['options'],
+            'correctAnswer': current_q['answer'],
+            'explanation': ''
+        })
+
+    doc.close()
+    print(f"✅ 提取了 {len(questions)} 道题目")
     return questions
 
-def parse_options(options_text):
-    """解析选项文本"""
-    options = {}
 
-    # 匹配选项: A. xxx 或 A、xxx
-    option_pattern = r'([A-Ea-e])[\.．、]\s*(.+?)(?=[A-Ea-e][\.．、]|$)'
-    matches = re.findall(option_pattern, options_text, re.DOTALL)
+def convert_to_frontend_format(questions):
+    answer_map = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4}
+    return [{
+        'id': q['id'],
+        'chapter': q['chapter'],
+        'type': q['type'],
+        'question': q['question'],
+        'options': q['options'],
+        'correctAnswer': answer_map.get(q['correctAnswer'], 0),
+        'explanation': q['explanation']
+    } for q in questions]
 
-    for letter, text in matches:
-        clean_opt = clean_text(text)
-        if clean_opt:
-            options[letter.upper()] = clean_opt
 
-    return options
+def group_by_chapter(questions):
+    chapters = {}
+    for q in questions:
+        c = q['chapter']
+        if c not in chapters:
+            chapters[c] = []
+        chapters[c].append(q)
+    return chapters
 
-def clean_text(text):
-    """清理文本"""
-    # 移除多余的空白和换行
-    text = re.sub(r'\s+', ' ', text)
-    text = text.strip()
-    # 移除页码等
-    text = re.sub(r'\d+\s*/\s*\d+', '', text)
-    return text.strip()
-
-def process_all_pdfs():
-    """处理所有PDF文件"""
-    pdf_files = [
-        ("/Users/moliex/Downloads/北医内科学题库-706题（分章节重排）.pdf", "内科学"),
-        ("/Users/moliex/Downloads/北医外科学题库-702题（分章节重排）.pdf", "外科学"),
-        ("/Users/moliex/Downloads/北医妇产科学题库-750题（分章节重排）.pdf", "妇产科学"),
-        ("/Users/moliex/Downloads/北医儿科学题库-770题（分章节重排）.pdf", "儿科学"),
-    ]
-
-    all_questions = {}
-    total_count = 0
-
-    for pdf_path, subject_name in pdf_files:
-        print(f"处理: {subject_name}...")
-        text = extract_text_from_pdf(pdf_path)
-        questions = parse_questions(text, subject_name)
-
-        # 按章节组织
-        subject_data = {}
-        for q in questions:
-            chapter = q['chapter']
-            if chapter not in subject_data:
-                subject_data[chapter] = []
-            subject_data[chapter].append(q)
-
-        all_questions[subject_name] = subject_data
-        count = len(questions)
-        total_count += count
-        print(f"  提取到 {count} 道题目")
-
-        # 保存单独文件
-        output_path = f"/Users/moliex/projects/medical-quiz/data/{subject_name}.json"
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(subject_data, f, ensure_ascii=False, indent=2)
-
-    # 保存汇总文件
-    summary_path = "/Users/moliex/projects/medical-quiz/data/all_questions.json"
-    with open(summary_path, 'w', encoding='utf-8') as f:
-        json.dump(all_questions, f, ensure_ascii=False, indent=2)
-
-    print(f"\n总计提取 {total_count} 道题目")
-    print(f"数据已保存到 /Users/moliex/projects/medical-quiz/data/")
-
-    return all_questions
 
 if __name__ == "__main__":
-    process_all_pdfs()
+    desktop_path = "/mnt/c/Users/administrator/Desktop"
+
+    pdf_files = {
+        "儿科学": "北医儿科学题库-770题（分章节重排）.pdf",
+        "内科学": "北医内科学题库-706题（分章节重排）.pdf",
+        "外科学": "北医外科学题库-702题（分章节重排）.pdf",
+        "妇产科学": "北医妇产科学题库-750题（分章节重排）.pdf"
+    }
+
+    output_dir = "/mnt/c/Dev/Projects/medical-quiz/data"
+    os.makedirs(output_dir, exist_ok=True)
+
+    for subject, filename in pdf_files.items():
+        pdf_path = os.path.join(desktop_path, filename)
+        if not os.path.exists(pdf_path):
+            print(f"⚠️  文件不存在: {filename}")
+            continue
+
+        questions = process_pdf_v2(pdf_path)
+        questions = convert_to_frontend_format(questions)
+        chapters = group_by_chapter(questions)
+
+        output_file = os.path.join(output_dir, f"{subject}.json")
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(chapters, f, ensure_ascii=False, indent=2)
+
+        print(f"💾 保存: {output_file}")
+        print(f"   章节: {len(chapters)} 个, 题目: {len(questions)} 道\n")
+
+    print("🎉 全部完成！")
