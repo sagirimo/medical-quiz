@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { CheckCircle2, XCircle, Flame, Trophy, BookOpen, ArrowRight, RotateCcw, AlertCircle, Layers, ChevronRight, FileText, Stethoscope } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { CheckCircle2, XCircle, Flame, Trophy, BookOpen, ArrowRight, RotateCcw, Layers, FileText, Stethoscope, ArrowLeft, Zap, ZapOff } from 'lucide-react';
 
 // 从public目录加载题库数据
 const loadQuizData = async () => {
@@ -30,12 +30,22 @@ const convertToExamSets = (rawData) => {
   ];
   const badges = ['儿科精选', '内科精要', '外科专练', '妇产通关'];
 
+  // 科目名到简写的映射（用于生成唯一ID）
+  const subjectShortNames = {
+    '儿科学': 'ek',
+    '内科学': 'nk',
+    '外科学': 'wk',
+    '妇产科学': 'fck'
+  };
+
   Object.entries(rawData).forEach(([subject, chapters], idx) => {
     const questions = [];
+    const shortName = subjectShortNames[subject] || subject;
     Object.entries(chapters).forEach(([chapter, qs]) => {
       qs.forEach(q => {
         questions.push({
-          id: q.id,
+          // 使用 科目简写_原ID 的格式确保全局唯一
+          id: `${shortName}_${q.id}`,
           chapter: chapter,
           type: 'mcq',
           question: q.question,
@@ -111,6 +121,26 @@ const Confetti = () => {
   return <canvas ref={canvasRef} className="fixed inset-0 pointer-events-none z-50" />;
 };
 
+// 本地存储键名
+const STORAGE_KEY = 'medical_quiz_records_v2'; // 升级版本号，自动清理旧数据
+
+// 从 localStorage 加载做题记录
+const loadRecords = () => {
+  try {
+    // 清理旧版本数据
+    localStorage.removeItem('medical_quiz_records');
+    const data = localStorage.getItem(STORAGE_KEY);
+    return data ? JSON.parse(data) : {};
+  } catch {
+    return {};
+  }
+};
+
+// 保存做题记录到 localStorage
+const saveRecords = (records) => {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+};
+
 // 主应用组件
 export default function MedicalQuiz() {
   const [examSets, setExamSets] = useState([]);
@@ -131,6 +161,18 @@ export default function MedicalQuiz() {
   const [wrongAnswers, setWrongAnswers] = useState([]);
   const [shake, setShake] = useState(false);
 
+  // 做题记录（持久化）
+  const [quizRecords, setQuizRecords] = useState(() => loadRecords());
+
+  // 快刷模式
+  const [fastMode, setFastMode] = useState(false);
+
+  // 用户在本题历史中的回答（用于回看已答题目）
+  const [answeredHistory, setAnsweredHistory] = useState({});
+
+  // 自动跳转定时器引用
+  const autoNextTimerRef = useRef(null);
+
   // 加载数据
   useEffect(() => {
     loadQuizData().then(data => {
@@ -140,10 +182,68 @@ export default function MedicalQuiz() {
     });
   }, []);
 
+  // 清理定时器
+  useEffect(() => {
+    return () => {
+      if (autoNextTimerRef.current) {
+        clearTimeout(autoNextTimerRef.current);
+      }
+    };
+  }, []);
+
   const handleSelectExam = (exam) => {
     setActiveExamData(exam);
     setGameState('examDetail');
   };
+
+  // 更新做题记录
+  const updateRecord = useCallback((questionId, isCorrect) => {
+    setQuizRecords(prev => {
+      const record = prev[questionId] || { correct: 0, wrong: 0 };
+      const newRecord = {
+        correct: isCorrect ? record.correct + 1 : record.correct,
+        wrong: isCorrect ? record.wrong : record.wrong + 1
+      };
+      const updated = { ...prev, [questionId]: newRecord };
+      saveRecords(updated);
+      return updated;
+    });
+  }, []);
+
+  // 获取题目正确率颜色样式（混合成单一颜色：红→黄→绿渐变）
+  const getAccuracyStyle = useCallback((questionId) => {
+    const record = quizRecords[questionId];
+    if (!record) return null;
+
+    const { correct, wrong } = record;
+    const total = correct + wrong;
+    if (total === 0) return null;
+
+    const correctRatio = correct / total;
+
+    // 使用 HSL 颜色模型：hue 从 0(红) 到 120(绿)
+    // 正确率 0% = 红色, 正确率 50% = 黄色, 正确率 100% = 绿色
+    const hue = correctRatio * 120;
+    const saturation = 70;
+    const lightness = 45;
+
+    return {
+      background: `hsl(${hue}, ${saturation}%, ${lightness}%)`,
+      color: 'white',
+      border: '2px solid transparent'
+    };
+  }, [quizRecords]);
+
+  // 获取题目正确率文本
+  const getAccuracyText = useCallback((questionId) => {
+    const record = quizRecords[questionId];
+    if (!record) return null;
+    const { correct, wrong } = record;
+    const total = correct + wrong;
+    if (total === 0) return null;
+    const pct = Math.round((correct / total) * 100);
+    return `${correct}/${total} (${pct}%)`;
+  }, [quizRecords]);
 
   const handleStartChapter = (chapter) => {
     const list = chapter === '全部题目'
@@ -160,6 +260,8 @@ export default function MedicalQuiz() {
     setWrongAnswers([]);
     setSelectedOption(null);
     setIsAnswered(false);
+    setAnsweredHistory({});
+    setFastMode(false); // 重置快刷模式
   };
 
   const currentQuestion = filteredData[currentQuestionIndex];
@@ -170,15 +272,33 @@ export default function MedicalQuiz() {
     setSelectedOption(index);
     setIsAnswered(true);
 
+    // 记录本次回答
+    setAnsweredHistory(prev => ({
+      ...prev,
+      [currentQuestionIndex]: index
+    }));
+
     if (index === currentQuestion.correctAnswer) {
       setScore(score + 1);
       const newStreak = streak + 1;
       setStreak(newStreak);
       if (newStreak > maxStreak) setMaxStreak(newStreak);
+      // 更新做题记录（正确）
+      updateRecord(currentQuestion.id, true);
+
+      // 快刷模式：做对后自动跳转
+      if (fastMode) {
+        autoNextTimerRef.current = setTimeout(() => {
+          handleNext();
+        }, 800);
+      }
     } else {
       setStreak(0);
       triggerShake();
       setWrongAnswers(prev => [...prev, { question: currentQuestion, userAnswer: index }]);
+      // 更新做题记录（错误）
+      updateRecord(currentQuestion.id, false);
+      // 快刷模式：做错停下，不自动跳转
     }
   };
 
@@ -188,13 +308,50 @@ export default function MedicalQuiz() {
   };
 
   const handleNext = () => {
+    // 清理可能存在的自动跳转定时器
+    if (autoNextTimerRef.current) {
+      clearTimeout(autoNextTimerRef.current);
+    }
+
     if (currentQuestionIndex < filteredData.length - 1) {
-      setCurrentQuestionIndex(currentQuestionIndex + 1);
-      setSelectedOption(null);
-      setIsAnswered(false);
+      const nextIndex = currentQuestionIndex + 1;
+      setCurrentQuestionIndex(nextIndex);
+      // 检查下一题是否已回答
+      if (answeredHistory[nextIndex] !== undefined) {
+        setSelectedOption(answeredHistory[nextIndex]);
+        setIsAnswered(true);
+      } else {
+        setSelectedOption(null);
+        setIsAnswered(false);
+      }
     } else {
       setGameState('result');
     }
+  };
+
+  const handlePrevious = () => {
+    // 清理可能存在的自动跳转定时器
+    if (autoNextTimerRef.current) {
+      clearTimeout(autoNextTimerRef.current);
+    }
+
+    if (currentQuestionIndex > 0) {
+      const prevIndex = currentQuestionIndex - 1;
+      setCurrentQuestionIndex(prevIndex);
+      // 回显之前的回答
+      if (answeredHistory[prevIndex] !== undefined) {
+        setSelectedOption(answeredHistory[prevIndex]);
+        setIsAnswered(true);
+      } else {
+        setSelectedOption(null);
+        setIsAnswered(false);
+      }
+    }
+  };
+
+  // 切换快刷模式
+  const toggleFastMode = () => {
+    setFastMode(prev => !prev);
   };
 
   const getStreakMessage = () => {
@@ -228,6 +385,7 @@ export default function MedicalQuiz() {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center py-12 px-4 sm:px-6">
         <style>{customStyles}</style>
+
         <div className="w-full max-w-5xl">
           <div className="text-center mb-12">
             <div className="w-24 h-24 bg-gradient-to-br from-pink-500 to-rose-600 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-xl shadow-rose-500/30 transform hover:rotate-6 transition-all duration-300">
@@ -274,49 +432,112 @@ export default function MedicalQuiz() {
     );
   }
 
-  // 章节选择
+  // 章节选择（重构：显示所有题目及正确率）
   if (gameState === 'examDetail') {
     const chapters = ["全部题目", ...new Set(activeExamData.questions.map(q => q.chapter))];
 
+    // 按章节分组题目
+    const questionsByChapter = {};
+    activeExamData.questions.forEach(q => {
+      if (!questionsByChapter[q.chapter]) {
+        questionsByChapter[q.chapter] = [];
+      }
+      questionsByChapter[q.chapter].push(q);
+    });
+
+    // 跳转到指定题目
+    const jumpToQuestion = (questionId) => {
+      const globalIndex = activeExamData.questions.findIndex(q => q.id === questionId);
+      setFilteredData(activeExamData.questions);
+      setSelectedChapter('全部题目');
+      setGameState('playing');
+      setCurrentQuestionIndex(globalIndex);
+      setScore(0);
+      setStreak(0);
+      setMaxStreak(0);
+      setWrongAnswers([]);
+      setSelectedOption(null);
+      setIsAnswered(false);
+      setAnsweredHistory({});
+      setFastMode(false);
+    };
+
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6">
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center p-6">
         <style>{customStyles}</style>
-        <div className="glass-panel max-w-3xl w-full p-10 sm:p-12 rounded-3xl text-center relative shadow-xl">
+
+        <div className="max-w-5xl w-full">
           <button
             onClick={() => setGameState('home')}
-            className="absolute top-6 left-6 text-slate-400 hover:text-slate-800 flex items-center gap-1 font-bold transition-colors bg-white px-4 py-2 rounded-xl shadow-sm border border-slate-100"
+            className="mb-6 text-slate-400 hover:text-slate-800 flex items-center gap-1 font-bold transition-colors bg-white px-4 py-2 rounded-xl shadow-sm border border-slate-100"
           >
             <RotateCcw className="w-5 h-5" /> 返回大厅
           </button>
 
-          <div className="w-24 h-24 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-6 mt-8 border-4 border-white shadow-md">
-            <BookOpen className="w-12 h-12 text-blue-600" />
+          <div className="glass-panel p-6 sm:p-8 rounded-3xl text-center relative shadow-xl mb-6">
+            <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-4 border-4 border-white shadow-md">
+              <BookOpen className="w-10 h-10 text-blue-600" />
+            </div>
+            <h1 className="text-3xl font-extrabold text-slate-800 mb-3">{activeExamData.title}</h1>
+            <p className="text-slate-500 mb-6 font-medium">点击题目直接跳转 · 颜色条表示正确率（绿色对/红错）</p>
+
+            {/* 章节快捷按钮 */}
+            <div className="flex flex-wrap justify-center gap-2">
+              {chapters.map((chapter, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => handleStartChapter(chapter)}
+                  className={`px-4 py-2 rounded-xl font-bold text-sm transition-all ${
+                    chapter === '全部题目'
+                      ? 'bg-slate-800 text-white hover:bg-black shadow-lg'
+                      : 'bg-white border-2 border-slate-200 hover:border-blue-400 text-slate-700 hover:bg-blue-50'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    {chapter === '全部题目' ? <Layers className="w-4 h-4" /> : <BookOpen className="w-4 h-4" />}
+                    <span>{chapter}</span>
+                    <span className="text-xs opacity-70 bg-black/10 px-2 py-0.5 rounded-full">
+                      {chapter === '全部题目' ? activeExamData.questions.length : activeExamData.questions.filter(q => q.chapter === chapter).length}
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
 
-          <h1 className="text-4xl font-extrabold text-slate-800 mb-4">{activeExamData.title}</h1>
-          <p className="text-slate-500 mb-10 font-medium text-lg">选择章节开始练习：</p>
+          {/* 题目列表（按章节分组，显示正确率颜色） */}
+          {Object.entries(questionsByChapter).map(([chapter, questions]) => (
+            <div key={chapter} className="mb-4">
+              <h3 className="text-base font-bold text-slate-700 mb-2 flex items-center gap-2 px-1">
+                <BookOpen className="w-4 h-4 text-blue-500" />
+                {chapter}
+                <span className="text-xs text-slate-400 font-normal">({questions.length}题)</span>
+              </h3>
+              <div className="grid grid-cols-6 sm:grid-cols-10 md:grid-cols-12 gap-1.5">
+                {questions.map((q, idx) => {
+                  const style = getAccuracyStyle(q.id);
+                  const hasRecord = style !== null;
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-left max-h-96 overflow-y-auto">
-            {chapters.map((chapter, idx) => (
-              <button
-                key={idx}
-                onClick={() => handleStartChapter(chapter)}
-                className={`p-5 rounded-2xl flex items-center justify-between transition-all duration-300 hover:-translate-y-1 ${
-                  chapter === '全部题目'
-                    ? 'col-span-1 sm:col-span-2 bg-slate-800 text-white shadow-xl hover:bg-black'
-                    : 'bg-white border-2 border-slate-100 hover:border-blue-400 text-slate-700 hover:bg-blue-50 hover:shadow-md'
-                }`}
-              >
-                <div className="flex items-center gap-4">
-                  {chapter === '全部题目' ? <Layers className="w-7 h-7" /> : <BookOpen className="w-6 h-6 text-blue-500" />}
-                  <span className="font-bold text-lg">{chapter}</span>
-                </div>
-                <div className="text-sm font-bold opacity-90 bg-black/10 px-4 py-1.5 rounded-full">
-                  {chapter === '全部题目' ? activeExamData.questions.length : activeExamData.questions.filter(q => q.chapter === chapter).length} 题
-                </div>
-              </button>
-            ))}
-          </div>
+                  return (
+                    <button
+                      key={q.id}
+                      onClick={() => jumpToQuestion(q.id)}
+                      className={`relative aspect-square rounded-lg flex flex-col items-center justify-center font-bold text-xs transition-all hover:scale-105 hover:shadow-lg border-2 ${
+                        hasRecord ? '' : 'bg-white border-slate-200 text-slate-500 hover:border-blue-400'
+                      }`}
+                      style={hasRecord ? style : {}}
+                      title={hasRecord ? `正确率: ${getAccuracyText(q.id)}` : '未做过'}
+                    >
+                      <span>{idx + 1}</span>
+                      {hasRecord && (
+                        <span className="text-[8px] opacity-80">{getAccuracyText(q.id)}</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     );
@@ -330,6 +551,7 @@ export default function MedicalQuiz() {
     return (
       <div className="min-h-screen bg-slate-50 py-10 px-4 flex items-center justify-center">
         {isExcellent && <Confetti />}
+
         <div className="max-w-3xl w-full glass-panel rounded-3xl p-10 text-center relative z-10 shadow-2xl">
           <Trophy className={`w-28 h-28 mx-auto mb-6 ${isExcellent ? 'text-yellow-400 drop-shadow-lg' : 'text-slate-300'}`} />
           <h2 className="text-5xl font-black text-slate-800 mb-4 tracking-tight">本卷刷题完成！</h2>
@@ -428,13 +650,6 @@ export default function MedicalQuiz() {
                     );
                   })}
                 </div>
-
-                {wrong.question.explanation && (
-                  <div className="bg-gradient-to-br from-rose-50 to-pink-50 text-rose-900 p-6 rounded-2xl text-base leading-relaxed border border-rose-100 shadow-inner">
-                    <strong className="flex items-center gap-2 mb-3 text-rose-800 text-lg"><AlertCircle className="w-5 h-5"/> 解析：</strong>
-                    <span className="whitespace-pre-wrap font-medium">{wrong.question.explanation}</span>
-                  </div>
-                )}
               </div>
             ))}
           </div>
@@ -459,7 +674,7 @@ export default function MedicalQuiz() {
             <RotateCcw className="w-4 h-4" /> 退出
           </button>
 
-          <div className="flex items-center gap-4 bg-white px-5 py-2 rounded-2xl shadow-sm border border-slate-100">
+          <div className="flex items-center gap-3 bg-white px-5 py-2 rounded-2xl shadow-sm border border-slate-100">
             <div className="text-lg font-black text-slate-700">得分: <span className="text-rose-500">{score}</span></div>
             {streak > 1 && (
               <div className="flex items-center text-white font-black bg-gradient-to-r from-amber-400 to-orange-500 px-3 py-1 rounded-xl shadow-md animate-bounce">
@@ -468,6 +683,20 @@ export default function MedicalQuiz() {
               </div>
             )}
           </div>
+
+          {/* 快刷模式开关 */}
+          <button
+            onClick={toggleFastMode}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold transition-all ${
+              fastMode
+                ? 'bg-amber-500 text-white shadow-lg'
+                : 'bg-white text-slate-500 border border-slate-200 hover:border-amber-400'
+            }`}
+            title={fastMode ? '快刷模式已开启：做对自动跳下一题' : '开启快刷模式'}
+          >
+            {fastMode ? <Zap className="w-4 h-4" /> : <ZapOff className="w-4 h-4" />}
+            <span className="text-sm">{fastMode ? '快刷中' : '快刷'}</span>
+          </button>
         </div>
 
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end mb-4 px-2 gap-4">
@@ -533,27 +762,55 @@ export default function MedicalQuiz() {
           </div>
         </div>
 
-        <div className={`transition-all duration-500 ease-in-out ${isAnswered ? 'opacity-100 translate-y-0 h-auto' : 'opacity-0 translate-y-4 h-0 overflow-hidden'}`}>
-          <div className="bg-white p-8 sm:p-10 rounded-3xl mb-10 flex flex-col gap-8 border-l-8 border-l-rose-500 shadow-2xl relative">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-rose-50 rounded-bl-full -z-10"></div>
-            <div className="z-10">
-              <h3 className="text-2xl font-black text-rose-900 mb-4 flex items-center gap-3">
-                <BookOpen className="w-7 h-7 text-rose-600"/> 解析
-              </h3>
-              <p className="text-slate-700 text-lg leading-relaxed font-bold bg-rose-50/50 p-6 rounded-2xl border border-rose-100">
-                {currentQuestion.explanation || '暂无解析'}
-              </p>
+        {/* 底部导航按钮 */}
+        <div className={`transition-all duration-500 ease-in-out ${isAnswered ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
+          <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-100 flex items-center justify-between gap-4">
+            {/* 上一题按钮 */}
+            <button
+              onClick={handlePrevious}
+              disabled={currentQuestionIndex === 0}
+              className={`flex items-center gap-2 py-3 px-6 rounded-xl font-bold transition-all ${
+                currentQuestionIndex === 0
+                  ? 'bg-slate-100 text-slate-300 cursor-not-allowed'
+                  : 'bg-slate-200 hover:bg-slate-300 text-slate-700'
+              }`}
+            >
+              <ArrowLeft className="w-5 h-5" />
+              上一题
+            </button>
+
+            {/* 题号指示 */}
+            <div className="flex items-center gap-2">
+              {filteredData.slice(Math.max(0, currentQuestionIndex - 2), currentQuestionIndex + 3).map((_, idx) => {
+                const actualIdx = Math.max(0, currentQuestionIndex - 2) + idx;
+                if (actualIdx >= filteredData.length) return null;
+                return (
+                  <div
+                    key={actualIdx}
+                    className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold transition-all ${
+                      actualIdx === currentQuestionIndex
+                        ? 'bg-rose-500 text-white'
+                        : answeredHistory[actualIdx] !== undefined
+                          ? filteredData[actualIdx].correctAnswer === answeredHistory[actualIdx]
+                            ? 'bg-emerald-100 text-emerald-600'
+                            : 'bg-rose-100 text-rose-600'
+                          : 'bg-slate-100 text-slate-400'
+                    }`}
+                  >
+                    {actualIdx + 1}
+                  </div>
+                );
+              })}
             </div>
 
-            <div className="flex items-center justify-end w-full pt-6 border-t border-slate-100 z-10">
-              <button
-                onClick={handleNext}
-                className="bg-slate-900 hover:bg-black text-white font-black py-4 px-10 rounded-2xl shadow-xl hover:shadow-2xl transition-all flex items-center justify-center gap-3 transform hover:translate-x-1 text-lg"
-              >
-                {currentQuestionIndex < filteredData.length - 1 ? '进入下一题' : '结束并结算'}
-                <ArrowRight className="w-6 h-6" />
-              </button>
-            </div>
+            {/* 下一题按钮 */}
+            <button
+              onClick={handleNext}
+              className="bg-slate-900 hover:bg-black text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2"
+            >
+              {currentQuestionIndex < filteredData.length - 1 ? '下一题' : '结束'}
+              <ArrowRight className="w-5 h-5" />
+            </button>
           </div>
         </div>
       </div>
