@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { CheckCircle2, XCircle, Flame, Trophy, BookOpen, ArrowRight, RotateCcw, Layers, FileText, Stethoscope, ArrowLeft, Zap, ZapOff } from 'lucide-react';
+import { CheckCircle2, XCircle, Flame, Trophy, BookOpen, ArrowRight, RotateCcw, Layers, FileText, Stethoscope, ArrowLeft, Zap, ZapOff, Edit3, Check, X } from 'lucide-react';
 
 // 从public目录加载题库数据
 const loadQuizData = async () => {
@@ -123,6 +123,7 @@ const Confetti = () => {
 
 // 本地存储键名
 const STORAGE_KEY = 'medical_quiz_records_v2'; // 升级版本号，自动清理旧数据
+const CORRECTIONS_KEY = 'medical_quiz_corrections_v1'; // 答案修正存储
 
 // 从 localStorage 加载做题记录
 const loadRecords = () => {
@@ -139,6 +140,21 @@ const loadRecords = () => {
 // 保存做题记录到 localStorage
 const saveRecords = (records) => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+};
+
+// 从 localStorage 加载答案修正
+const loadCorrections = () => {
+  try {
+    const data = localStorage.getItem(CORRECTIONS_KEY);
+    return data ? JSON.parse(data) : {};
+  } catch {
+    return {};
+  }
+};
+
+// 保存答案修正到 localStorage
+const saveCorrections = (corrections) => {
+  localStorage.setItem(CORRECTIONS_KEY, JSON.stringify(corrections));
 };
 
 // 主应用组件
@@ -163,6 +179,12 @@ export default function MedicalQuiz() {
 
   // 做题记录（持久化）
   const [quizRecords, setQuizRecords] = useState(() => loadRecords());
+
+  // 答案修正记录（持久化）
+  const [answerCorrections, setAnswerCorrections] = useState(() => loadCorrections());
+
+  // 编辑答案模式
+  const [isEditingAnswer, setIsEditingAnswer] = useState(false);
 
   // 快刷模式
   const [fastMode, setFastMode] = useState(false);
@@ -245,6 +267,22 @@ export default function MedicalQuiz() {
     return `${correct}/${total} (${pct}%)`;
   }, [quizRecords]);
 
+  // 获取修正后的正确答案（如果有修正，则使用修正值）
+  const getCorrectedAnswer = useCallback((questionId, originalAnswer) => {
+    return answerCorrections[questionId] !== undefined
+      ? answerCorrections[questionId]
+      : originalAnswer;
+  }, [answerCorrections]);
+
+  // 更新答案修正
+  const updateCorrection = useCallback((questionId, newCorrectAnswer) => {
+    setAnswerCorrections(prev => {
+      const updated = { ...prev, [questionId]: newCorrectAnswer };
+      saveCorrections(updated);
+      return updated;
+    });
+  }, []);
+
   const handleStartChapter = (chapter) => {
     const list = chapter === '全部题目'
       ? activeExamData.questions
@@ -265,6 +303,11 @@ export default function MedicalQuiz() {
   };
 
   const currentQuestion = filteredData[currentQuestionIndex];
+  // 使用修正后的答案
+  const effectiveCorrectAnswer = currentQuestion
+    ? getCorrectedAnswer(currentQuestion.id, currentQuestion.correctAnswer)
+    : 0;
+  const hasCorrection = currentQuestion && answerCorrections[currentQuestion.id] !== undefined;
   const progress = filteredData.length > 0 ? ((currentQuestionIndex) / filteredData.length) * 100 : 0;
 
   const handleOptionClick = (index) => {
@@ -278,7 +321,8 @@ export default function MedicalQuiz() {
       [currentQuestionIndex]: index
     }));
 
-    if (index === currentQuestion.correctAnswer) {
+    // 使用修正后的答案判断
+    if (index === effectiveCorrectAnswer) {
       setScore(score + 1);
       const newStreak = streak + 1;
       setStreak(newStreak);
@@ -299,6 +343,18 @@ export default function MedicalQuiz() {
       // 更新做题记录（错误）
       updateRecord(currentQuestion.id, false);
       // 快刷模式：做错停下，不自动跳转
+    }
+  };
+
+  // 修正答案
+  const handleCorrectAnswer = (newAnswer) => {
+    updateCorrection(currentQuestion.id, newAnswer);
+    setIsEditingAnswer(false);
+    // 更新已答历史中的判断（如果还没答，不处理）
+    if (answeredHistory[currentQuestionIndex] !== undefined) {
+      // 重新判断这题是否正确
+      const userAnswer = answeredHistory[currentQuestionIndex];
+      // 注意：这时 effectiveCorrectAnswer 已经更新了，但因为状态还没刷新，直接用 newAnswer
     }
   };
 
@@ -735,8 +791,26 @@ export default function MedicalQuiz() {
               let buttonStyle = "bg-slate-50 border-2 border-transparent text-slate-700 hover:border-rose-400 hover:bg-rose-50 hover:shadow-md";
               let icon = null;
 
+              // 编辑模式
+              if (isEditingAnswer) {
+                const isSelected = effectiveCorrectAnswer === index;
+                buttonStyle = isSelected
+                  ? "bg-amber-50 border-2 border-amber-500 text-amber-800 scale-[1.02] shadow-xl"
+                  : "bg-slate-50 border-2 border-slate-200 text-slate-700 hover:border-amber-400 hover:bg-amber-50";
+                return (
+                  <button
+                    key={index}
+                    onClick={() => handleCorrectAnswer(index)}
+                    className={`w-full text-left p-6 rounded-2xl flex items-center justify-between transition-all duration-200 outline-none font-bold text-lg ${buttonStyle}`}
+                  >
+                    <span className="pr-4 leading-relaxed">{option}</span>
+                    {isSelected && <CheckCircle2 className="w-8 h-8 text-amber-600 flex-shrink-0" />}
+                  </button>
+                );
+              }
+
               if (isAnswered) {
-                if (index === currentQuestion.correctAnswer) {
+                if (index === effectiveCorrectAnswer) {
                   buttonStyle = "bg-emerald-50 border-2 border-emerald-500 text-emerald-800 z-10 scale-[1.02] shadow-xl transition-transform";
                   icon = <CheckCircle2 className="w-8 h-8 text-emerald-600 flex-shrink-0" />;
                 } else if (index === selectedOption) {
@@ -760,6 +834,38 @@ export default function MedicalQuiz() {
               );
             })}
           </div>
+
+          {/* 修正答案提示和按钮 */}
+          {isAnswered && !isEditingAnswer && (
+            <div className="mt-6 flex items-center justify-center gap-3">
+              {hasCorrection && (
+                <span className="text-xs text-amber-600 bg-amber-50 px-3 py-1 rounded-full font-bold border border-amber-200">
+                  已修正
+                </span>
+              )}
+              <button
+                onClick={() => setIsEditingAnswer(true)}
+                className="flex items-center gap-2 text-amber-600 hover:text-amber-700 bg-amber-50 hover:bg-amber-100 px-4 py-2 rounded-xl font-bold text-sm transition-all border border-amber-200 hover:border-amber-400"
+              >
+                <Edit3 className="w-4 h-4" />
+                修正答案
+              </button>
+            </div>
+          )}
+
+          {/* 编辑模式下的提示 */}
+          {isEditingAnswer && (
+            <div className="mt-6 flex items-center justify-center gap-3 bg-amber-50 p-4 rounded-xl border border-amber-200">
+              <span className="text-amber-700 font-bold text-sm">点击选项设为正确答案</span>
+              <button
+                onClick={() => setIsEditingAnswer(false)}
+                className="flex items-center gap-1 text-slate-500 hover:text-slate-700 bg-white px-3 py-1.5 rounded-lg font-bold text-sm transition-all border border-slate-200"
+              >
+                <X className="w-4 h-4" />
+                取消
+              </button>
+            </div>
+          )}
         </div>
 
         {/* 底部导航按钮 */}
@@ -791,7 +897,7 @@ export default function MedicalQuiz() {
                       actualIdx === currentQuestionIndex
                         ? 'bg-rose-500 text-white'
                         : answeredHistory[actualIdx] !== undefined
-                          ? filteredData[actualIdx].correctAnswer === answeredHistory[actualIdx]
+                          ? getCorrectedAnswer(filteredData[actualIdx].id, filteredData[actualIdx].correctAnswer) === answeredHistory[actualIdx]
                             ? 'bg-emerald-100 text-emerald-600'
                             : 'bg-rose-100 text-rose-600'
                           : 'bg-slate-100 text-slate-400'
